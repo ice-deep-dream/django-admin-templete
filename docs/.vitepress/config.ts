@@ -4,6 +4,7 @@ export default defineConfig({
   title: 'Django Admin Template',
   description: '基于 Django Unfold 和 React 的现代化管理后台项目模板',
   base: '/django-admin-templete/',
+  ignoreDeadLinks: true,
   themeConfig: {
     logo: '/logo.svg',
     nav: [
