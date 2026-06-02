@@ -1,0 +1,1103 @@
+from django import forms
+from django.contrib import admin, messages
+from django.contrib.auth.admin import GroupAdmin as BaseGroupAdmin
+from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
+from django.contrib.auth.models import Group
+from django.core.validators import EMPTY_VALUES
+from django.http import HttpResponse
+from django.shortcuts import redirect
+from django.urls import reverse_lazy
+from django.utils.html import format_html
+from django.utils.timezone import now
+from django.utils.translation import gettext_lazy as _
+from import_export.admin import ImportExportModelAdmin
+from import_export.resources import ModelResource
+
+from example.models import (
+    ActionUser,
+    ApprovalChoices,
+    Category,
+    ColorChoices,
+    DialogActionUser,
+    FilterUser,
+    Invoice,
+    InvoiceItem,
+    Label,
+    Post,
+    PriorityChoices,
+    Profile,
+    Project,
+    SectionUser,
+    StatusChoices,
+    Tag,
+    Task,
+    User,
+)
+from example.views import CrispyFormView
+from unfold.admin import ModelAdmin, StackedInline, TabularInline
+from unfold.contrib.filters.admin import (
+    AllValuesCheckboxFilter,
+    AutocompleteSelectFilter,
+    AutocompleteSelectMultipleFilter,
+    BooleanRadioFilter,
+    CheckboxFilter,
+    ChoicesCheckboxFilter,
+    ChoicesDropdownFilter,
+    ChoicesRadioFilter,
+    DropdownFilter,
+    FieldTextFilter,
+    MultipleChoicesDropdownFilter,
+    MultipleDropdownFilter,
+    MultipleRelatedDropdownFilter,
+    RadioFilter,
+    RangeDateFilter,
+    RangeDateTimeFilter,
+    RangeNumericFilter,
+    RangeNumericListFilter,
+    RelatedCheckboxFilter,
+    RelatedDropdownFilter,
+    SingleNumericFilter,
+    SliderNumericFilter,
+    TextFilter,
+)
+from unfold.contrib.import_export.forms import (
+    ExportForm,
+    ImportForm,
+    SelectableFieldsExportForm,
+)
+from unfold.contrib.inlines.admin import NonrelatedTabularInline
+from unfold.datasets import BaseDataset
+from unfold.decorators import action, display
+from unfold.forms import (
+    AdminPasswordChangeForm,
+    BaseDialogForm,
+    UserChangeForm,
+    UserCreationForm,
+)
+from unfold.paginator import InfinitePaginator
+from unfold.sections import TableSection, TemplateSection
+from unfold.widgets import (
+    UnfoldAdminCheckboxSelectMultipleWidget,
+    UnfoldAdminLocationWidget,
+    UnfoldAdminSelect2Widget,
+    UnfoldAdminTextInputWidget,
+)
+
+admin.site.unregister(Group)
+
+
+class UserTagInline(StackedInline):
+    model = User.tags.through
+    collapsible = True
+    per_page = 10
+    tab = True
+    readonly_fields = ["user"]
+
+    def get_queryset(self, request, *args, **kwargs):
+        qs = super().get_queryset(request, *args, **kwargs)
+        return qs.order_by("pk")
+
+
+class InvoiceItemInline(TabularInline):
+    model = InvoiceItem
+    raw_id_fields = ["invoice"]
+
+
+class UserInvoiceInline(TabularInline):
+    model = Invoice
+    inlines = [InvoiceItemInline]
+    # tab = True
+
+
+class PostInline(StackedInline):
+    model = Post
+    ordering_field = "weight"
+    hide_ordering_field = True
+    list_display = ["title", "weight"]
+
+
+class ProjectDatasetModelAdmin(ModelAdmin):
+    pass
+
+
+class ProjectDataset(BaseDataset):
+    model = Project
+    model_admin = ProjectDatasetModelAdmin
+    tab = True
+
+
+class ExtendedUserChangeForm(UserChangeForm):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        if "status" in self.fields:
+            self.fields["status"].widget = UnfoldAdminSelect2Widget(
+                choices=StatusChoices
+            )
+
+        if "projects" in self.fields:
+            self.fields["projects"].widget = UnfoldAdminCheckboxSelectMultipleWidget(
+                choices=Project.objects.all().values_list("id", "name")
+            )
+
+        if "location" in self.fields:
+            self.fields["location"].widget = UnfoldAdminLocationWidget()
+
+
+class ProjectNonrelatedInline(NonrelatedTabularInline):
+    model = Project
+    per_page = 5
+    show_count = True
+
+    def get_count(self, request, obj):
+        return self.get_form_queryset(obj).count()
+
+    def get_count_variant(self, request, obj):
+        return "primary"
+
+    def get_form_queryset(self, obj):
+        return self.model.objects.filter(is_active=True)
+
+    def save_new_instance(self, parent, instance):
+        pass
+
+
+class UserAnotherResource(ModelResource):
+    class Meta:
+        model = User
+        fields = ["username", "last_name"]
+
+
+class UserResource(ModelResource):
+    class Meta:
+        model = User
+        fields = ["username", "first_name"]
+
+
+@admin.register(User)
+class UserAdmin(BaseUserAdmin, ModelAdmin, ImportExportModelAdmin):
+    import_form_class = ImportForm
+    export_form_class = ExportForm
+    resource_classes = [UserResource, UserAnotherResource]
+    form = ExtendedUserChangeForm
+    add_form = UserCreationForm
+    change_password_form = AdminPasswordChangeForm
+    inlines = [UserInvoiceInline, UserTagInline]
+    change_form_datasets = [
+        ProjectDataset,
+    ]
+    autocomplete_fields = ["tags"]
+    autocomplete_fields_excluded_from_warnings = [
+        "projects",
+    ]
+    readonly_fields = [
+        "custom_readonly_field",
+        "another_readonly_field",
+        "boolean_readonly_field",
+        "html_readonly_field",
+    ]
+    readonly_preprocess_fields = {
+        "custom_readonly_field": "html.unescape",
+        "another_readonly_field": lambda content: content.strip(),
+    }
+    list_display = (
+        "username",
+        "email",
+        "first_name",
+        "last_name",
+        "content_type",
+        "is_staff",
+        "display_header",
+        "display_status",
+        "display_dropdown",
+        "display_datetime",
+        "display_username",
+        "weight",
+    )
+    list_display_links = ["username", "content_type"]
+    list_editable = ["is_staff"]
+    ordering_field = "weight"
+    hide_ordering_field = True
+    fieldsets = (
+        (
+            None,
+            {
+                "fields": (
+                    # "username",
+                    "password",
+                    "boolean_readonly_field",
+                    "custom_readonly_field",
+                    "another_readonly_field",
+                    "html_readonly_field",
+                )
+            },
+        ),
+        (
+            _("Personal info"),
+            {
+                "fields": (
+                    ("first_name", "last_name"),
+                    "email",
+                    "status",
+                    "tags",
+                    "projects",
+                    "location",
+                    (),
+                ),
+                "classes": ["tab"],
+            },
+        ),
+        (
+            _("Permissions"),
+            {
+                "fields": (
+                    "username",  # Test the error count tab
+                    "is_active",
+                    "is_staff",
+                    "is_superuser",
+                    "groups",
+                    "user_permissions",
+                ),
+                "classes": ["tab"],
+            },
+        ),
+        (_("Important dates"), {"fields": ("last_login", "date_joined")}),
+    )
+
+    def get_custom_urls(self):
+        return [
+            (
+                "crispy-form",
+                "crispy_form",
+                CrispyFormView.as_view(model_admin=self),
+            ),
+        ]
+
+    @display(description="Custom readonly field")
+    def custom_readonly_field(self, obj):
+        return "Custom readonly field"
+
+    @display(description="Another readonly field")
+    def another_readonly_field(self, obj):
+        return "Another readonly field"
+
+    @display(description="HTML readonly field")
+    def html_readonly_field(self, obj):
+        return format_html("<b>HTML readonly field {}</b>", "example-value")
+
+    @display(description="Boolean readonly field", boolean=True)
+    def boolean_readonly_field(self, obj):
+        return True
+
+    @display(description="Status", label=True)
+    def display_status(self, obj):
+        return obj.status
+
+    @display(header=True)
+    def display_header(self, obj):
+        return "Custom header", "Description"
+
+    @display(description="Status", dropdown=True)
+    def display_dropdown(self, obj):
+        return {
+            "title": "Custom dropdown title",
+            "content": "template content",
+        }
+
+    def display_datetime(self, obj):
+        return now()
+
+
+class RelatedTableSection(TableSection):
+    verbose_name = "Related log entries"
+    related_name = "logentry_set"
+    columns = [
+        "object_id",
+    ]
+
+
+class TagSection(TableSection):
+    related_name = "tags"
+    fields = ["name"]
+
+
+class SomeTemplateSection(TemplateSection):
+    template_name = "section_template.html"
+
+
+@admin.register(SectionUser)
+class SectionUserAdmin(UserAdmin):
+    form = UserChangeForm
+    add_form = UserCreationForm
+    change_password_form = AdminPasswordChangeForm
+    list_sections = [
+        SomeTemplateSection,
+        RelatedTableSection,
+    ]
+
+
+class CustomTextFilter(TextFilter):
+    title = _("Text filter")
+    parameter_name = "text_username"
+
+    def queryset(self, request, queryset):
+        if self.value() not in EMPTY_VALUES:
+            return queryset.filter(username__icontains=self.value())
+
+        return queryset
+
+
+class CustomRangeNumericListFilter(RangeNumericListFilter):
+    parameter_name = "numeric_range_custom"
+    title = "Numeric Range Custom"
+
+
+class CustomSliderNumericFilter(SliderNumericFilter):
+    MAX_DECIMALS = 2
+    STEP = 1
+
+
+class CustomStatusRadioFilter(RadioFilter):
+    title = _("Custom radio filter")
+    parameter_name = "custom_radio_filter"
+
+    def lookups(self, request, model_admin):
+        return StatusChoices.choices
+
+    def queryset(self, request, queryset):
+        if self.value() not in EMPTY_VALUES:
+            return queryset.filter(status=self.value())
+
+        return queryset
+
+
+class CustomApprovalCheckboxFilter(CheckboxFilter):
+    title = _("Custom checkbox filter")
+    parameter_name = "custom_checkbox_filter"
+
+    def lookups(self, request, model_admin):
+        return ApprovalChoices.choices
+
+    def queryset(self, request, queryset):
+        if self.value() not in EMPTY_VALUES:
+            return queryset.filter(approval__in=self.value())
+
+        return queryset
+
+
+class CustomPriorityDropdownFilter(DropdownFilter):
+    title = _("Custom priority dropdown filter")
+    parameter_name = "custom_priority"
+
+    def lookups(self, request, model_admin):
+        return PriorityChoices.choices
+
+    def queryset(self, request, queryset):
+        if self.value() not in EMPTY_VALUES:
+            return queryset.filter(priority=self.value())
+
+        return queryset
+
+
+class CustomColorMultipleDropdownFilter(MultipleDropdownFilter):
+    title = _("Custom color multiple dropdown filter")
+    parameter_name = "custom_color"
+
+    def lookups(self, request, model_admin):
+        return ColorChoices.choices
+
+    def queryset(self, request, queryset):
+        if self.value() not in EMPTY_VALUES:
+            return queryset.filter(color__in=self.value())
+
+        return queryset
+
+
+@admin.register(FilterUser)
+class FilterUserAdmin(UserAdmin):
+    list_fullwidth = True
+    list_display = [
+        "username",
+        "email",
+        "is_active",
+        "is_staff",
+        "is_active",
+        "status",
+        "approval",
+        "date_joined",
+        "last_login",
+    ]
+    list_filter = [
+        CustomTextFilter,
+        ("username", FieldTextFilter),
+        # Autocomplete filters
+        ("projects", AutocompleteSelectFilter),
+        ("tasks", AutocompleteSelectMultipleFilter),
+        # Dropdown filters
+        ("priority", ChoicesDropdownFilter),
+        ("color", MultipleChoicesDropdownFilter),
+        ("categories", RelatedDropdownFilter),
+        ("labels", MultipleRelatedDropdownFilter),
+        CustomPriorityDropdownFilter,
+        CustomColorMultipleDropdownFilter,
+        # Date/time filters
+        ("date_joined", RangeDateFilter),
+        ("last_login", RangeDateTimeFilter),
+        # Choice filters
+        ("status", ChoicesRadioFilter),
+        ("approval", ChoicesCheckboxFilter),
+        ("is_active", BooleanRadioFilter),
+        ("tags", RelatedCheckboxFilter),
+        ("username", AllValuesCheckboxFilter),
+        CustomStatusRadioFilter,
+        CustomApprovalCheckboxFilter,
+        # Numeric filters
+        ("numeric_single", SingleNumericFilter),
+        ("numeric_slider", SliderNumericFilter),
+        ("numeric_slider_custom", CustomSliderNumericFilter),
+        ("numeric_range", RangeNumericFilter),
+        CustomRangeNumericListFilter,
+    ]
+    list_filter_submit = True
+    list_filter_sheet = False
+    fieldsets = [
+        (
+            None,
+            {
+                "fields": (
+                    "username",
+                    "status",
+                    "approval",
+                    "numeric_single",
+                    "numeric_slider",
+                    "numeric_slider_custom",
+                    "numeric_range",
+                    "numeric_range_custom",
+                ),
+            },
+        ),
+    ]
+
+
+class DialogActionForm(BaseDialogForm):
+    confirm = forms.CharField(
+        label="Type 'CONFIRM' to proceed", widget=UnfoldAdminTextInputWidget
+    )
+
+    def clean_confirm(self):
+        if self.cleaned_data["confirm"] != "CONFIRM":
+            raise forms.ValidationError("You must confirm to proceed.")
+
+        return self.cleaned_data["confirm"]
+
+
+@admin.register(DialogActionUser)
+class DialogActionsUserAdmin(BaseUserAdmin, ModelAdmin):
+    actions_list = [
+        "changelist_dialog_action_without_custom_form",
+        "changelist_dialog_action_with_custom_form",
+        "changelist_dialog_action_with_permissions_true",
+        "changelist_dialog_action_with_permissions_false",
+    ]
+    actions_row = [
+        "row_dialog_action_without_custom_form",
+        "row_dialog_action_with_custom_form",
+    ]
+    actions_detail = [
+        "changeform_dialog_action_without_custom_form",
+        "changeform_dialog_action_with_custom_form",
+    ]
+
+    @action(
+        description="Dialog action",
+        dialog={
+            "title": "Changelist dialog action",
+            "description": "This is a dialog action",
+        },
+    )
+    def changeform_dialog_action_without_custom_form(self, request, form, object_id):
+        messages.success(request, "Action successfully executed")
+
+        return HttpResponse(
+            headers={
+                "HX-Redirect": reverse_lazy(
+                    "admin:example_dialogactionuser_changelist"
+                ),
+            }
+        )
+
+    @action(
+        description="Dialog action with form",
+        dialog={
+            "title": "Changelist dialog action with custom form",
+            "description": "This is a dialog action",
+            "form_class": DialogActionForm,
+        },
+    )
+    def changeform_dialog_action_with_custom_form(self, request, form, object_id):
+        messages.success(request, "Action successfully executed")
+
+        return HttpResponse(
+            headers={
+                "HX-Redirect": reverse_lazy(
+                    "admin:example_dialogactionuser_changelist"
+                ),
+            }
+        )
+
+    @action(
+        description="Dialog action",
+        dialog={
+            "title": "Changelist dialog action",
+            "description": "This is a dialog action",
+        },
+    )
+    def changelist_dialog_action_without_custom_form(self, request, form):
+        messages.success(request, "Action successfully executed")
+
+        return HttpResponse(
+            headers={
+                "HX-Redirect": reverse_lazy(
+                    "admin:example_dialogactionuser_changelist"
+                ),
+            }
+        )
+
+    @action(
+        description="Dialog action with permissions true",
+        permissions=["changelist_dialog_action_with_permissions_true"],
+        dialog={
+            "title": "Changelist dialog action with permissions true",
+            "description": "This is a dialog action with permissions true",
+        },
+    )
+    def changelist_dialog_action_with_permissions_true(self, request, form):
+        messages.success(request, "Action successfully executed")
+
+        return HttpResponse(
+            headers={
+                "HX-Redirect": reverse_lazy(
+                    "admin:example_dialogactionuser_changelist"
+                ),
+            }
+        )
+
+    def has_changelist_dialog_action_with_permissions_true_permission(self, request):
+        return True
+
+    @action(
+        description="Dialog action with permissions false",
+        permissions=["changelist_dialog_action_with_permissions_false"],
+        dialog={
+            "title": "Changelist dialog action with permissions false",
+            "description": "This is a dialog action with permissions false",
+        },
+    )
+    def changelist_dialog_action_with_permissions_false(self, request, form):
+        messages.success(request, "Action successfully executed")
+
+        return HttpResponse(
+            headers={
+                "HX-Redirect": reverse_lazy(
+                    "admin:example_dialogactionuser_changelist"
+                ),
+            }
+        )
+
+    def has_changelist_dialog_action_with_permissions_false_permission(self, request):
+        return False
+
+    @action(
+        description="Dialog action with form",
+        dialog={
+            "title": "Changelist dialog action with custom form",
+            "description": "This is a dialog action",
+            "form_class": DialogActionForm,
+        },
+    )
+    def changelist_dialog_action_with_custom_form(self, request, form):
+        messages.success(request, "Action successfully executed")
+
+        return HttpResponse(
+            headers={
+                "HX-Redirect": reverse_lazy(
+                    "admin:example_dialogactionuser_changelist"
+                ),
+            }
+        )
+
+    @action(
+        description="Dialog action",
+        dialog={
+            "title": "Row dialog action",
+            "description": "This is a dialog action",
+        },
+    )
+    def row_dialog_action_without_custom_form(self, request, form, object_id):
+        messages.success(request, "Action successfully executed")
+
+        return HttpResponse(
+            headers={
+                "HX-Redirect": reverse_lazy(
+                    "admin:example_dialogactionuser_changelist"
+                ),
+            }
+        )
+
+    @action(
+        description="Dialog action with form",
+        dialog={
+            "title": "Row dialog action with custom form",
+            "description": "This is a dialog action",
+            "form_class": DialogActionForm,
+        },
+    )
+    def row_dialog_action_with_custom_form(self, request, form, object_id):
+        messages.success(request, "Action successfully executed")
+
+        return HttpResponse(
+            headers={
+                "HX-Redirect": reverse_lazy(
+                    "admin:example_dialogactionuser_changelist"
+                ),
+            }
+        )
+
+
+@admin.register(ActionUser)
+class ActionsUserAdmin(BaseUserAdmin, ModelAdmin):
+    form = UserChangeForm
+    add_form = UserCreationForm
+    change_password_form = AdminPasswordChangeForm
+    actions_list = [
+        "changelist_action",
+        "changelist_action_mixed_permissions_true",
+        "changelist_action_mixed_permissions_false",
+        "changelist_action_mixed_permissions_perm_not_granted",
+        "changelist_action_permission_true",
+        "changelist_action_permission_false",
+        "changelist_action_multiple_different_permissions",
+        {
+            "title": "Changelist dropdown for actions",
+            "items": [
+                "changelist_action_dropdown",
+            ],
+        },
+    ]
+    actions_row = [
+        "changelist_row_action",
+        "changelist_row_action_mixed_permissions_true",
+        "changelist_row_action_mixed_permissions_false",
+        "changelist_row_action_mixed_permissions_perm_not_granted",
+        "changelist_row_action_permission_true",
+        "changelist_row_action_permission_false",
+        "changelist_row_action_multiple_different_permissions",
+    ]
+    actions_detail = [
+        "changeform_action",
+        "changeform_action_mixed_permissions_true",
+        "changeform_action_mixed_permissions_false",
+        "changeform_action_mixed_permissions_perm_not_granted",
+        "changeform_action_permission_true",
+        "changeform_action_permission_false",
+        "changeform_action_multiple_different_permissions",
+        {
+            "title": "Changeform dropdown for actions",
+            "items": [
+                "changeform_action_dropdown",
+            ],
+        },
+    ]
+    actions_submit_line = [
+        "submit_line_action",
+        "submit_line_action_mixed_permissions_true",
+        "submit_line_action_mixed_permissions_false",
+        "submit_line_action_mixed_permissions_perm_not_granted",
+        "submit_line_action_permission_true",
+        "submit_line_action_permission_false",
+        "submit_line_action_multiple_different_permissions",
+    ]
+
+    ######################################################################
+    # Changelist actions
+    ######################################################################
+    @action(description="Changelist action dropdown")
+    def changelist_action_dropdown(self, request):
+        messages.success(request, "Changelist action dropdown successfully executed")
+        return redirect(reverse_lazy("admin:example_user_changelist"))
+
+    @action(description="Changelist action")
+    def changelist_action(self, request):
+        messages.success(request, "Changelist action successfully executed")
+        return redirect(reverse_lazy("admin:example_user_changelist"))
+
+    @action(
+        description="Changelist action with mixed permissions true",
+        permissions=["changelist_action_true", "example.view_user"],
+    )
+    def changelist_action_mixed_permissions_true(self, request):
+        messages.success(
+            request,
+            "Changelist action with mixed permissions true successfully executed",
+        )
+        return redirect(reverse_lazy("admin:example_user_changelist"))
+
+    @action(
+        description="Changelist action with mixed permissions false",
+        permissions=["changelist_action_false", "example.view_user"],
+    )
+    def changelist_action_mixed_permissions_false(self, request):
+        messages.success(
+            request,
+            "Changelist action with mixed permissions false successfully executed",
+        )
+        return redirect(reverse_lazy("admin:example_user_changelist"))
+
+    @action(
+        description="Changelist action with mixed permissions perm not granted",
+        permissions=["changelist_action_true", "example.delete_user"],
+    )
+    def changelist_action_mixed_permissions_perm_not_granted(self, request):
+        messages.success(
+            request,
+            "Changelist action with mixed permissions perm not granted successfully executed",
+        )
+        return redirect(reverse_lazy("admin:example_user_changelist"))
+
+    @action(
+        description="Changelist action permission true",
+        permissions=["changelist_action_true"],
+    )
+    def changelist_action_permission_true(self, request):
+        messages.success(
+            request, "Changelist action with true permission successfully executed"
+        )
+        return redirect(reverse_lazy("admin:example_user_changelist"))
+
+    @action(
+        description="Changelist action permission false",
+        permissions=["changelist_action_false"],
+    )
+    def changelist_action_permission_false(self, request):
+        messages.success(
+            request, "Changelist action with false permission successfully executed"
+        )
+        return redirect(reverse_lazy("admin:example_user_changelist"))
+
+    @action(
+        description="Changelist action with multiple permissions",
+        permissions=[
+            "changelist_action_true",
+            "changelist_action_false",
+        ],
+    )
+    def changelist_action_multiple_different_permissions(self, request):
+        messages.success(
+            request,
+            "Changelist action with multiple different permissions successfully executed",
+        )
+        return redirect(reverse_lazy("admin:example_user_changelist"))
+
+    def has_changelist_action_true_permission(self, request):
+        return True
+
+    def has_changelist_action_false_permission(self, request):
+        return False
+
+    ######################################################################
+    # Changelist row actions
+    ######################################################################
+    @action(description="Changelist row action")
+    def changelist_row_action(self, request, object_id):
+        messages.success(request, "Changelist row action successfully executed")
+        return redirect(reverse_lazy("admin:example_user_changelist"))
+
+    @action(
+        description="Changelist row action with mixed permissions true",
+        permissions=["changelist_row_action_true", "example.view_user"],
+    )
+    def changelist_row_action_mixed_permissions_true(self, request, object_id):
+        messages.success(
+            request,
+            "Changelist row action with mixed permissions true successfully executed",
+        )
+        return redirect(reverse_lazy("admin:example_user_changelist"))
+
+    @action(
+        description="Changelist row action with mixed permissions false",
+        permissions=["changelist_row_action_false", "example.view_user"],
+    )
+    def changelist_row_action_mixed_permissions_false(self, request, object_id):
+        messages.success(
+            request,
+            "Changelist row action with mixed permissions false successfully executed",
+        )
+        return redirect(reverse_lazy("admin:example_user_changelist"))
+
+    @action(
+        description="Changelist row action with mixed permissions perm not granted",
+        permissions=["changelist_row_action_true", "example.delete_user"],
+    )
+    def changelist_row_action_mixed_permissions_perm_not_granted(
+        self, request, object_id
+    ):
+        messages.success(
+            request,
+            "Changelist row action with mixed permissions perm not granted successfully executed",
+        )
+        return redirect(reverse_lazy("admin:example_user_changelist"))
+
+    @action(
+        description="Changelist row action permission true",
+        permissions=["changelist_row_action_true"],
+    )
+    def changelist_row_action_permission_true(self, request, object_id):
+        messages.success(
+            request,
+            "Changelist row action with true permission successfully executed",
+        )
+        return redirect(reverse_lazy("admin:example_user_changelist"))
+
+    @action(
+        description="Changelist row action permission false",
+        permissions=["changelist_row_action_false"],
+    )
+    def changelist_row_action_permission_false(self, request, object_id):
+        messages.success(
+            request,
+            "Changelist row action with false permission successfully executed",
+        )
+        return redirect(reverse_lazy("admin:example_user_changelist"))
+
+    @action(
+        description="Changelist row action with multiple permissions",
+        permissions=[
+            "changelist_row_action_true",
+            "changelist_row_action_false",
+        ],
+    )
+    def changelist_row_action_multiple_different_permissions(self, request, object_id):
+        messages.success(
+            request,
+            "Changelist row action with multiple different permissions successfully executed",
+        )
+        return redirect(reverse_lazy("admin:example_user_changelist"))
+
+    def has_changelist_row_action_true_permission(self, request):
+        return True
+
+    def has_changelist_row_action_false_permission(self, request):
+        return False
+
+    ######################################################################
+    # Changeform actions
+    ######################################################################
+    @action(
+        description="Changeform action dropdown",
+        permissions=["changeform_action_dropdown"],
+    )
+    def changeform_action_dropdown(self, request, object_id):
+        messages.success(request, "Changeform action dropdown successfully executed")
+        return redirect(reverse_lazy("admin:example_user_changelist"))
+
+    def has_changeform_action_dropdown_permission(self, request, object_id):
+        return True
+
+    @action(
+        description="Changeform action with mixed permissions true",
+        permissions=["example.view_user", "changeform_action_true"],
+    )
+    def changeform_action_mixed_permissions_true(self, request, object_id):
+        messages.success(
+            request,
+            "Changeform action with mixed permissions true successfully executed",
+        )
+        return redirect(reverse_lazy("admin:example_user_changelist"))
+
+    @action(
+        description="Changeform action with mixed permissions false",
+        permissions=["example.view_user", "changeform_action_false"],
+    )
+    def changeform_action_mixed_permissions_false(self, request, object_id):
+        messages.success(
+            request,
+            "Changeform action with mixed permissions false successfully executed",
+        )
+        return redirect(reverse_lazy("admin:example_user_changelist"))
+
+    @action(
+        description="Changeform action with mixed permissions perm not granted",
+        permissions=["example.delete_user", "changeform_action_true"],
+    )
+    def changeform_action_mixed_permissions_perm_not_granted(self, request, object_id):
+        messages.success(
+            request,
+            "Changeform action with mixed permissions perm not granted successfully executed",
+        )
+        return redirect(reverse_lazy("admin:example_user_changelist"))
+
+    @action(description="Changeform action")
+    def changeform_action(self, request, object_id):
+        messages.success(request, "Changeform action successfully executed")
+        return redirect(reverse_lazy("admin:example_user_changelist"))
+
+    @action(
+        description="Changeform action permission true",
+        permissions=["changeform_action_true"],
+    )
+    def changeform_action_permission_true(self, request, object_id):
+        messages.success(
+            request,
+            "Changeform action with true permission successfully executed",
+        )
+        return redirect(reverse_lazy("admin:example_user_changelist"))
+
+    @action(
+        description="Changeform action permission false",
+        permissions=["changeform_action_false"],
+    )
+    def changeform_action_permission_false(self, request, object_id):
+        messages.success(
+            request,
+            "Changeform action with false permission successfully executed",
+        )
+        return redirect(reverse_lazy("admin:example_user_changelist"))
+
+    @action(
+        description="Changeform action with multiple permissions",
+        permissions=[
+            "changeform_action_true",
+            "changeform_action_false",
+        ],
+    )
+    def changeform_action_multiple_different_permissions(self, request, object_id):
+        messages.success(
+            request,
+            "Changeform action with multiple different permissions successfully executed",
+        )
+        return redirect(reverse_lazy("admin:example_user_changelist"))
+
+    def has_changeform_action_true_permission(self, request, object_id):
+        return True
+
+    def has_changeform_action_false_permission(self, request, object_id):
+        return False
+
+    ######################################################################
+    # Submit line actions
+    ######################################################################
+    @action(description="Submit line action")
+    def submit_line_action(self, request, obj):
+        messages.success(request, "Submit line action successfully executed")
+
+    @action(
+        description="Submit line action with mixed permissions true",
+        permissions=["submit_line_action_true", "example.view_user"],
+    )
+    def submit_line_action_mixed_permissions_true(self, request, obj):
+        messages.success(
+            request,
+            "Submit line action with mixed permissions true successfully executed",
+        )
+        return redirect(reverse_lazy("admin:example_user_changelist"))
+
+    @action(
+        description="Submit line action with mixed permissions false",
+        permissions=["submit_line_action_false", "example.view_user"],
+    )
+    def submit_line_action_mixed_permissions_false(self, request, obj):
+        messages.success(
+            request,
+            "Submit line action with mixed permissions false successfully executed",
+        )
+        return redirect(reverse_lazy("admin:example_user_changelist"))
+
+    @action(
+        description="Submit line action with mixed permissions perm not granted",
+        permissions=["submit_line_action_true", "example.delete_user"],
+    )
+    def submit_line_action_mixed_permissions_perm_not_granted(self, request, obj):
+        messages.success(
+            request,
+            "Submit line action with mixed permissions perm not granted successfully executed",
+        )
+        return redirect(reverse_lazy("admin:example_user_changelist"))
+
+    @action(
+        description="Submit line action permission true",
+        permissions=["submit_line_action_true"],
+    )
+    def submit_line_action_permission_true(self, request, obj):
+        messages.success(
+            request,
+            "Submit line action with true permission successfully executed",
+        )
+
+    @action(
+        description="Submit line action permission false",
+        permissions=["submit_line_action_false"],
+    )
+    def submit_line_action_permission_false(self, request, obj):
+        messages.success(
+            request,
+            "Submit line action with false permission successfully executed",
+        )
+
+    @action(
+        description="Submit line action with multiple permissions",
+        permissions=[
+            "submit_line_action_true",
+            "submit_line_action_false",
+        ],
+    )
+    def submit_line_action_multiple_different_permissions(self, request, obj):
+        messages.success(
+            request,
+            "Submit line action with multiple different permissions successfully executed",
+        )
+        return redirect(reverse_lazy("admin:example_user_changelist"))
+
+    def has_submit_line_action_true_permission(self, request, object_id):
+        return True
+
+    def has_submit_line_action_false_permission(self, request, object_id):
+        return False
+
+
+@admin.register(Group)
+class GroupAdmin(BaseGroupAdmin, ModelAdmin):
+    pass
+
+
+@admin.register(Tag)
+class TagAdmin(ModelAdmin):
+    search_fields = ["name"]
+
+
+@admin.register(Category)
+class CategoryAdmin(ModelAdmin):
+    search_fields = ["name"]
+    inlines = [ProjectNonrelatedInline]
+
+
+@admin.register(Label)
+class LabelAdmin(ModelAdmin):
+    search_fields = ["name"]
+
+
+@admin.register(Project)
+class ProjectAdmin(ModelAdmin, ImportExportModelAdmin):
+    paginator = InfinitePaginator
+    list_per_page = 10
+    import_form_class = ImportForm
+    export_form_class = SelectableFieldsExportForm
+    search_fields = ["name"]
+
+
+@admin.register(Task)
+class TaskAdmin(ModelAdmin):
+    search_fields = ["name"]
+
+
+@admin.register(Profile)
+class ProfileAdmin(ModelAdmin):
+    search_fields = ["name"]
