@@ -12,6 +12,8 @@
 
 📖 **完整文档**: https://ice-deep-dream.github.io/django-admin-templete/
 
+🌐 [English](README.en.md) | [中文](README.md)
+
 ---
 
 ## 功能
